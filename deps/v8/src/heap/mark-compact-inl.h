@@ -9,6 +9,7 @@
 #include "src/heap/mark-compact.h"
 #include "src/heap/objects-visiting-inl.h"
 #include "src/heap/remembered-set.h"
+#include "src/objects/js-collection-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -95,22 +96,18 @@ int MarkingVisitor<fixed_array_mode, retaining_path_mode, MarkingState>::
     heap_->set_encountered_weak_collections(weak_collection);
   }
 
-  // Skip visiting the backing hash table containing the mappings and the
-  // pointer to the other enqueued weak collections, both are post-processed.
-  int size = JSWeakCollection::BodyDescriptorWeak::SizeOf(map, weak_collection);
-  JSWeakCollection::BodyDescriptorWeak::IterateBody(map, weak_collection, size,
-                                                    this);
-
-  // Partially initialized weak collection is enqueued, but table is ignored.
-  if (!weak_collection->table()->IsHashTable()) return size;
-
-  // Mark the backing hash table without pushing it on the marking stack.
-  Object** slot =
-      HeapObject::RawField(weak_collection, JSWeakCollection::kTableOffset);
-  HeapObject* obj = HeapObject::cast(*slot);
-  collector_->RecordSlot(weak_collection, slot, obj);
-  MarkObjectWithoutPush(weak_collection, obj);
+  int size = JSWeakCollection::BodyDescriptor::SizeOf(map, weak_collection);
+  JSWeakCollection::BodyDescriptor::IterateBody(map, weak_collection, size,
+                                                this);
   return size;
+}
+
+template <FixedArrayVisitationMode fixed_array_mode,
+          TraceRetainingPathMode retaining_path_mode, typename MarkingState>
+int MarkingVisitor<fixed_array_mode, retaining_path_mode, MarkingState>::
+    VisitEphemeronHashTable(Map* map, EphemeronHashTable* table) {
+  // TODO(dinfuehr): Account size of the backing store.
+  return 0;
 }
 
 template <FixedArrayVisitationMode fixed_array_mode,
@@ -379,6 +376,16 @@ void MarkCompactCollector::MarkRootObject(Root root, HeapObject* obj) {
     }
   }
 }
+
+#ifdef ENABLE_MINOR_MC
+
+void MinorMarkCompactCollector::MarkRootObject(HeapObject* obj) {
+  if (heap_->InNewSpace(obj) && non_atomic_marking_state_.WhiteToGrey(obj)) {
+    worklist_->Push(kMainThread, obj);
+  }
+}
+
+#endif
 
 void MarkCompactCollector::MarkExternallyReferencedObject(HeapObject* obj) {
   if (marking_state()->WhiteToGrey(obj)) {
